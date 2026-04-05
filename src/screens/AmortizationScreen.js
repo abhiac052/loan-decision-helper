@@ -1,0 +1,237 @@
+import React, { useRef, useMemo, useState } from 'react';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity } from 'react-native';
+import ViewShot from 'react-native-view-shot';
+import * as Sharing from 'expo-sharing';
+import * as Print from 'expo-print';
+import { useApp } from '../context/AppContext';
+import { useDialog } from '../context/DialogContext';
+import { getAmortizationSchedule, formatINR, calculateEMI } from '../utils/calculations';
+import { SPACING, COLORS, RADIUS } from '../constants/theme';
+import { FadeIn } from '../utils/animations';
+import Card from '../components/Card';
+
+const AmortizationScreen = ({ route }) => {
+  const { colors, darkMode } = useApp();
+  const dialog = useDialog();
+  const { amount, rate, months } = route.params;
+  const captureRef = useRef();
+  const [viewMode, setViewMode] = useState('monthly'); // monthly | yearly
+
+  const schedule = useMemo(() => getAmortizationSchedule(amount, rate, months), [amount, rate, months]);
+
+  const yearlySchedule = useMemo(() => {
+    const yearly = [];
+    for (let i = 0; i < schedule.length; i += 12) {
+      const chunk = schedule.slice(i, i + 12);
+      yearly.push({
+        year: Math.floor(i / 12) + 1,
+        principal: chunk.reduce((s, r) => s + r.principal, 0),
+        interest: chunk.reduce((s, r) => s + r.interest, 0),
+        balance: chunk[chunk.length - 1].balance,
+      });
+    }
+    return yearly;
+  }, [schedule]);
+
+  const data = viewMode === 'yearly' ? yearlySchedule : schedule;
+
+  const emiResult = useMemo(() => calculateEMI(amount, rate, months), [amount, rate, months]);
+
+  const handleImageExport = async () => {
+    try {
+      const uri = await captureRef.current.capture();
+      await Sharing.shareAsync(uri, { mimeType: 'image/png', dialogTitle: 'Share Schedule' });
+    } catch {
+      dialog.error('Export Failed', 'Could not capture the schedule');
+    }
+  };
+
+  const handlePDFExport = async () => {
+    try {
+      const rows = schedule.map((r, i) =>
+        `<tr style="background:${i % 2 === 0 ? '#F8FAFC' : '#FFFFFF'};">
+          <td style="text-align:center;">${r.month}</td>
+          <td style="text-align:right;color:#10B981;">${formatINR(r.principal)}</td>
+          <td style="text-align:right;color:#EF4444;">${formatINR(r.interest)}</td>
+          <td style="text-align:right;color:#64748B;">${formatINR(r.balance)}</td>
+        </tr>`
+      ).join('');
+
+      const html = `<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, Roboto, sans-serif; padding: 24px; color: #0F172A; font-size: 12px; }
+    .header { text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 2px solid #4F46E5; }
+    .header h1 { color: #4F46E5; font-size: 22px; margin-bottom: 4px; }
+    .header p { color: #64748B; font-size: 13px; }
+    .summary-table { width: 100%; margin-bottom: 20px; border-collapse: collapse; }
+    .summary-table td { padding: 12px 8px; text-align: center; width: 33.33%; }
+    .summary-table .label { font-size: 10px; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; }
+    .summary-table .value { font-size: 18px; font-weight: 800; margin-top: 4px; }
+    .main-table { width: 100%; border-collapse: collapse; page-break-inside: auto; }
+    .main-table thead { background: #EEF2FF; }
+    .main-table th { padding: 8px 6px; font-size: 10px; color: #4F46E5; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; border-bottom: 2px solid #C7D2FE; }
+    .main-table th:first-child { text-align: center; }
+    .main-table th:not(:first-child) { text-align: right; }
+    .main-table td { padding: 6px; font-size: 11px; border-bottom: 1px solid #E2E8F0; }
+    .main-table tr { page-break-inside: avoid; }
+    .footer { text-align: center; margin-top: 20px; padding-top: 12px; border-top: 1px solid #E2E8F0; font-size: 10px; color: #94A3B8; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Amortization Schedule</h1>
+    <p>${formatINR(amount)} @ ${rate}% for ${months} months (${(months / 12).toFixed(1)} years)</p>
+  </div>
+
+  <table class="summary-table">
+    <tr>
+      <td>
+        <div class="label">Monthly EMI</div>
+        <div class="value" style="color:#4F46E5;">${formatINR(emiResult.emi)}</div>
+      </td>
+      <td>
+        <div class="label">Total Interest</div>
+        <div class="value" style="color:#EF4444;">${formatINR(emiResult.totalInterest)}</div>
+      </td>
+      <td>
+        <div class="label">Total Payment</div>
+        <div class="value" style="color:#0F172A;">${formatINR(emiResult.totalPayment)}</div>
+      </td>
+    </tr>
+  </table>
+
+  <table class="main-table">
+    <thead>
+      <tr><th>Month</th><th>Principal</th><th>Interest</th><th>Balance</th></tr>
+    </thead>
+    <tbody>
+      ${rows}
+    </tbody>
+  </table>
+
+  <div class="footer">Generated by Loan Decision Helper 🇮🇳</div>
+</body>
+</html>`;
+
+      const { uri } = await Print.printToFileAsync({ html, width: 612, height: 792 });
+      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Share PDF' });
+    } catch {
+      dialog.error('Export Failed', 'Could not generate PDF');
+    }
+  };
+
+  const renderHeader = () => (
+    <View style={[styles.tableHeader, { backgroundColor: COLORS.primary + '12' }]}>
+      <Text style={[styles.th, styles.col1, { color: COLORS.primary }]}>{viewMode === 'yearly' ? 'Year' : 'Month'}</Text>
+      <Text style={[styles.th, styles.col2, { color: COLORS.primary }]}>Principal</Text>
+      <Text style={[styles.th, styles.col2, { color: COLORS.primary }]}>Interest</Text>
+      <Text style={[styles.th, styles.col2, { color: COLORS.primary }]}>Balance</Text>
+    </View>
+  );
+
+  const renderRow = ({ item, index }) => {
+    const label = viewMode === 'yearly' ? item.year : item.month;
+    return (
+      <View style={[styles.row, { borderBottomColor: colors.border }, index % 2 === 0 && { backgroundColor: colors.card }]}>
+        <Text style={[styles.td, styles.col1, { color: colors.text }]}>{label}</Text>
+        <Text style={[styles.td, styles.col2, { color: COLORS.green }]}>{formatINR(item.principal)}</Text>
+        <Text style={[styles.td, styles.col2, { color: COLORS.red }]}>{formatINR(item.interest)}</Text>
+        <Text style={[styles.td, styles.col2, { color: colors.textSecondary }]}>{formatINR(item.balance)}</Text>
+      </View>
+    );
+  };
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.bg }]}>
+      <FadeIn>
+        <View style={styles.topBar}>
+          <View style={[styles.toggleWrap, { backgroundColor: darkMode ? colors.border : '#E2E8F0' }]}>
+            {['monthly', 'yearly'].map(m => (
+              <TouchableOpacity key={m} onPress={() => setViewMode(m)} style={[styles.toggleBtn, viewMode === m && styles.toggleActive]} activeOpacity={0.7}>
+                <Text style={[styles.toggleText, { color: colors.textSecondary }, viewMode === m && styles.toggleActiveText]}>
+                  {m === 'monthly' ? 'Monthly' : 'Yearly'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View style={styles.exportBtns}>
+            <TouchableOpacity onPress={handlePDFExport} style={[styles.exportBtn, { backgroundColor: COLORS.primary + '12' }]} activeOpacity={0.7}>
+              <Text style={styles.exportIcon}>📄</Text>
+              <Text style={styles.exportLabel}>PDF</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleImageExport} style={[styles.exportBtn, { backgroundColor: COLORS.primary + '12' }]} activeOpacity={0.7}>
+              <Text style={styles.exportIcon}>🖼️</Text>
+              <Text style={styles.exportLabel}>Image</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </FadeIn>
+
+      <ViewShot ref={captureRef} options={{ format: 'png', quality: 1 }} style={[styles.exportWrap, { backgroundColor: colors.bg }]}>
+        <Card style={styles.summaryCard}>
+          <Text style={[styles.summaryTitle, { color: colors.text }]}>Amortization Summary</Text>
+          <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>
+            {formatINR(amount)} @ {rate}% for {months} months
+          </Text>
+          <View style={styles.summaryRow}>
+            <View style={styles.summaryItem}>
+              <Text style={[styles.summaryItemLabel, { color: colors.textSecondary }]}>EMI</Text>
+              <Text style={[styles.summaryItemValue, { color: COLORS.primary }]}>{formatINR(emiResult.emi)}</Text>
+            </View>
+            <View style={styles.summaryItem}>
+              <Text style={[styles.summaryItemLabel, { color: colors.textSecondary }]}>Interest</Text>
+              <Text style={[styles.summaryItemValue, { color: COLORS.red }]}>{formatINR(emiResult.totalInterest)}</Text>
+            </View>
+            <View style={styles.summaryItem}>
+              <Text style={[styles.summaryItemLabel, { color: colors.textSecondary }]}>Total</Text>
+              <Text style={[styles.summaryItemValue, { color: colors.text }]}>{formatINR(emiResult.totalPayment)}</Text>
+            </View>
+          </View>
+        </Card>
+      </ViewShot>
+
+      {renderHeader()}
+      <FlatList
+        data={data}
+        keyExtractor={(_, i) => String(i)}
+        renderItem={renderRow}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+      />
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm },
+  toggleWrap: { flexDirection: 'row', borderRadius: RADIUS.sm, padding: 3 },
+  toggleBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: RADIUS.sm - 2 },
+  toggleActive: { backgroundColor: COLORS.primary },
+  toggleText: { fontSize: 13, fontWeight: '600' },
+  toggleActiveText: { color: '#FFF' },
+  exportBtns: { flexDirection: 'row', gap: 8 },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20 },
+  exportIcon: { fontSize: 14, marginRight: 4 },
+  exportLabel: { fontSize: 13, fontWeight: '600', color: COLORS.primary },
+  exportWrap: { paddingHorizontal: SPACING.lg },
+  summaryCard: { marginBottom: SPACING.sm, paddingVertical: SPACING.md },
+  summaryTitle: { fontSize: 16, fontWeight: '700', textAlign: 'center', marginBottom: 4 },
+  summaryLabel: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: SPACING.sm },
+  summaryItem: { alignItems: 'center' },
+  summaryItemLabel: { fontSize: 11, fontWeight: '500' },
+  summaryItemValue: { fontSize: 16, fontWeight: '800', marginTop: 2 },
+  tableHeader: { flexDirection: 'row', paddingVertical: 10, paddingHorizontal: SPACING.lg, marginHorizontal: SPACING.lg, borderRadius: RADIUS.sm },
+  th: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase' },
+  row: { flexDirection: 'row', paddingVertical: 10, paddingHorizontal: SPACING.lg, marginHorizontal: SPACING.lg, borderBottomWidth: 0.5 },
+  td: { fontSize: 12, fontWeight: '500' },
+  col1: { width: 48 },
+  col2: { flex: 1, textAlign: 'right' },
+  list: { paddingBottom: 80 },
+});
+
+export default AmortizationScreen;
