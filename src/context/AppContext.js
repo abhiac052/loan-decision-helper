@@ -8,7 +8,7 @@ export const useApp = () => useContext(AppContext);
 
 export const AppProvider = ({ children }) => {
   const [darkMode, setDarkMode] = useState(false);
-  const [adFree, setAdFree] = useState(false);
+  const [adFree, setAdFree] = useState(true);
 
   useEffect(() => {
     (async () => {
